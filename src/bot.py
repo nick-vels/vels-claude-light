@@ -12,7 +12,7 @@ from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, Message, TelegramObject
 
 from src.bridge import (
@@ -117,7 +117,10 @@ class VelsClaudeLightBot:
 
     def _register_handlers(self) -> None:
         self._dp.message.register(self._cmd_start, CommandStart())
-        # Commands /new /clear /compact /stop /status land in Task 9
+        self._dp.message.register(self._cmd_new, Command("new", "clear"))
+        self._dp.message.register(self._cmd_compact, Command("compact"))
+        self._dp.message.register(self._cmd_stop, Command("stop"))
+        self._dp.message.register(self._cmd_status, Command("status"))
         self._dp.message.register(self._on_text)
 
     # --- handlers ---------------------------------------------------------
@@ -215,3 +218,61 @@ class VelsClaudeLightBot:
         finally:
             chat.active_bridge = None
             chat.active_streaming = None
+
+    async def _cmd_new(self, msg: Message) -> None:
+        chat = self._chats[msg.chat.id]
+        # 1. Cancel active generation if any
+        if chat.active_task and not chat.active_task.done():
+            chat.active_task.cancel()
+            try:
+                await chat.active_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if chat.active_bridge:
+            chat.active_bridge.kill()
+        # 2. Clear queue
+        chat.queue.clear()
+        # 3. Wipe session
+        await self._storage.clear_session(msg.chat.id)
+        await msg.answer("✅ Новая сессия. Контекст сброшен.")
+
+    async def _cmd_compact(self, msg: Message) -> None:
+        chat = self._chats[msg.chat.id]
+        if chat.active_task and not chat.active_task.done():
+            await msg.answer("⏳ Подождите, Claude ещё отвечает.")
+            return
+        # Treat /compact as normal prompt — the Claude CLI handles the built-in command itself
+        chat.active_task = asyncio.create_task(self._run_one(msg.chat.id, "/compact", msg))
+
+    async def _cmd_stop(self, msg: Message) -> None:
+        chat = self._chats[msg.chat.id]
+        if chat.active_task is None or chat.active_task.done():
+            await msg.answer("Нечего останавливать.")
+            return
+        if chat.active_bridge:
+            chat.active_bridge.kill()
+        chat.active_task.cancel()
+        try:
+            await chat.active_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        # Drop queued messages too — /stop is decisive
+        chat.queue.clear()
+        await msg.answer("🛑 Остановлено.")
+
+    async def _cmd_status(self, msg: Message) -> None:
+        session = await self._storage.get_session(msg.chat.id)
+        if not session:
+            await msg.answer("Нет активной сессии. Напишите что-нибудь, чтобы начать.")
+            return
+        sid = session.get("session_id", "")
+        tail = sid[-8:] if sid else "(нет)"
+        count = session.get("message_count", 0)
+        last = session.get("last_activity", "—")
+        await msg.answer(
+            f"📊 <b>Сессия</b>\n"
+            f"ID: <code>…{tail}</code>\n"
+            f"Сообщений: {count}\n"
+            f"Последняя активность: <code>{last}</code>\n"
+            f"Рабочая директория: <code>{self._cfg.working_dir}</code>",
+        )
