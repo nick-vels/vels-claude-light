@@ -10,6 +10,7 @@ Responsible for:
 from __future__ import annotations
 
 import glob
+import json
 import os
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -88,3 +89,63 @@ class Event:
     type: EventType
     text: str = ""
     metadata: dict | None = None
+
+
+def parse_event(raw_line: str) -> Event | None:
+    """Parse a single newline-delimited stream-json line into an Event.
+
+    Returns ``None`` for lines we deliberately ignore (malformed JSON, empty
+    lines, non-text deltas, full ``assistant`` text which duplicates deltas).
+    """
+    if not raw_line or not raw_line.strip():
+        return None
+    try:
+        data = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return None
+
+    kind = data.get("type")
+
+    if kind == "system" and data.get("subtype") == "init":
+        sid = data.get("session_id")
+        if sid:
+            return Event(type=EventType.INIT, metadata={"session_id": sid})
+        return None
+
+    if kind == "stream_event":
+        event = data.get("event") or {}
+        delta = event.get("delta") or {}
+        if delta.get("type") == "text_delta":
+            text = delta.get("text", "")
+            if text:
+                return Event(type=EventType.TEXT, text=text)
+        return None
+
+    if kind == "assistant":
+        # Extract tool_use items; ignore the full text (duplicate of text_delta).
+        message = data.get("message") or {}
+        for block in message.get("content", []) or []:
+            if block.get("type") == "tool_use":
+                return Event(type=EventType.TOOL_USE, text=block.get("name", ""))
+        return None
+
+    if kind == "result":
+        usage = data.get("usage") or {}
+        return Event(
+            type=EventType.RESULT,
+            text=data.get("result", "") or "",
+            metadata={
+                "session_id": data.get("session_id"),
+                "usage": usage,
+                "cost_usd": data.get("total_cost_usd", 0.0),
+            },
+        )
+
+    if kind == "error":
+        return Event(
+            type=EventType.ERROR,
+            text=str(data.get("error") or data.get("message") or "unknown"),
+            metadata=data,
+        )
+
+    return None
