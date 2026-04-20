@@ -76,14 +76,14 @@ class Streamer:
         state._timer_task = asyncio.create_task(self._timer_loop(state))
         return state
 
-    async def append(self, state: StreamingState, chunk: str) -> None:
+    def append(self, state: StreamingState, chunk: str) -> None:
         state.buffer += chunk
 
     async def finalize(self, state: StreamingState, *, aborted: bool = False) -> Message | None:
         """Stop loops, send final HTML message, delete timer. Returns final message."""
         state._receiving = False
         try:
-            await asyncio.wait_for(state._done.wait(), timeout=3.0)
+            await asyncio.wait_for(state._done.wait(), timeout=5.0)
         except asyncio.TimeoutError:
             pass
         for task in (state._draft_task, state._timer_task):
@@ -199,8 +199,8 @@ class Streamer:
                 await state.final_message.edit_text(full, parse_mode="HTML")
                 last_msg = state.final_message
             except Exception as e:
-                logger.warning("final edit failed: %s", e)
-                last_msg = None
+                logger.warning("final edit failed, sending new message: %s", e)
+                last_msg = await self._send_possibly_split(state, full)
         else:
             last_msg = await self._send_possibly_split(state, full)
 
