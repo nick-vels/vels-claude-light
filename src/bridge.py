@@ -9,9 +9,11 @@ Responsible for:
 """
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -149,3 +151,156 @@ def parse_event(raw_line: str) -> Event | None:
         )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Error hierarchy
+# ---------------------------------------------------------------------------
+
+
+class ClaudeError(RuntimeError):
+    """Base class for Claude CLI runtime errors."""
+
+    user_message: str = "❌ Ошибка Claude Code."
+
+
+class ContextOverflow(ClaudeError):
+    user_message = (
+        "⚠️ Контекст переполнен. Сессия сброшена. Повторите запрос."
+    )
+
+
+class RateLimit(ClaudeError):
+    user_message = "⏳ Превышен лимит API. Подождите и попробуйте снова."
+
+
+class AuthError(ClaudeError):
+    user_message = (
+        "🔐 Ошибка авторизации Claude. Запустите `claude` в терминале для логина."
+    )
+
+
+class Timeout(ClaudeError):
+    user_message = "⏱️ Операция превысила таймаут."
+
+
+def classify_error(exit_code: int | None, stderr: str) -> ClaudeError:
+    """Map subprocess exit info → typed exception with a user-facing message."""
+    lo = (stderr or "").lower()
+    if any(k in lo for k in ("rate limit", "429", "too many requests")):
+        return RateLimit(stderr)
+    if any(k in lo for k in ("context length", "context window", "token limit",
+                              "prompt is too long", "exceeds maximum")):
+        return ContextOverflow(stderr)
+    if any(k in lo for k in ("unauthorized", "401", "403", "forbidden", "invalid api")):
+        return AuthError(stderr)
+    err = ClaudeError(stderr or f"exit code {exit_code}")
+    err.user_message = f"❌ Ошибка Claude CLI: {stderr.strip() or exit_code}"
+    return err
+
+
+# ---------------------------------------------------------------------------
+# ClaudeBridge
+# ---------------------------------------------------------------------------
+
+
+class ClaudeBridge:
+    """Thin wrapper around ``claude -p --output-format stream-json ...``."""
+
+    def __init__(
+        self,
+        *,
+        binary: str,
+        working_dir: str,
+        permission_mode: str = "bypassPermissions",
+        timeout_minutes: int = 30,
+    ) -> None:
+        self._binary = binary
+        self._working_dir = working_dir
+        self._permission_mode = permission_mode
+        self._timeout = timeout_minutes * 60
+        self._process: asyncio.subprocess.Process | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.returncode is None
+
+    async def run(
+        self,
+        *,
+        prompt: str,
+        session_id: str | None,
+    ) -> AsyncIterator[Event]:
+        """Spawn the CLI and yield parsed Events. Caller iterates events.
+
+        Raises ``ClaudeError`` subclasses on non-zero exit codes.
+        """
+        args = [
+            self._binary,
+            "-p", prompt,
+            "--output-format", "stream-json",
+            "--include-partial-messages",
+            "--verbose",
+            "--permission-mode", self._permission_mode,
+            "--dangerously-skip-permissions",
+        ]
+        if session_id:
+            args.extend(["--resume", session_id])
+
+        env = build_subprocess_env()
+        self._process = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=self._working_dir,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stderr_buf: list[bytes] = []
+
+        async def _drain_stderr() -> None:
+            assert self._process and self._process.stderr
+            async for line in self._process.stderr:
+                stderr_buf.append(line)
+
+        stderr_task = asyncio.create_task(_drain_stderr())
+        try:
+            assert self._process.stdout is not None
+            async for raw_line in self._read_stdout_with_timeout():
+                ev = parse_event(raw_line)
+                if ev is not None:
+                    yield ev
+        finally:
+            await stderr_task
+
+        rc = await self._process.wait()
+        if rc != 0:
+            stderr_text = b"".join(stderr_buf).decode("utf-8", errors="replace")
+            raise classify_error(rc, stderr_text)
+
+    async def _read_stdout_with_timeout(self) -> AsyncIterator[str]:
+        assert self._process and self._process.stdout
+        deadline = asyncio.get_event_loop().time() + self._timeout
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                self.kill()
+                raise Timeout(f"Claude CLI exceeded {self._timeout}s")
+            try:
+                line = await asyncio.wait_for(
+                    self._process.stdout.readline(), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                self.kill()
+                raise Timeout(f"Claude CLI exceeded {self._timeout}s") from None
+            if not line:
+                return
+            yield line.decode("utf-8", errors="replace").rstrip("\n")
+
+    def kill(self) -> None:
+        """Kill the subprocess if running. Safe to call repeatedly."""
+        if self._process and self._process.returncode is None:
+            try:
+                self._process.kill()
+            except ProcessLookupError:
+                pass

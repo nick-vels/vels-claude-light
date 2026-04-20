@@ -74,3 +74,37 @@ def test_parse_malformed_json_returns_none() -> None:
 def test_parse_empty_line_returns_none() -> None:
     assert parse_event("") is None
     assert parse_event("   ") is None
+
+
+# ---------------------------------------------------------------------------
+# classify_error tests
+# ---------------------------------------------------------------------------
+
+from src.bridge import (  # noqa: E402
+    AuthError,
+    ClaudeError,
+    ContextOverflow,
+    RateLimit,
+    classify_error,
+)
+
+
+def test_classify_rate_limit() -> None:
+    err = classify_error(1, "429 too many requests")
+    assert isinstance(err, RateLimit)
+
+
+def test_classify_context_overflow() -> None:
+    err = classify_error(1, "prompt is too long (exceeds maximum 200000)")
+    assert isinstance(err, ContextOverflow)
+
+
+def test_classify_auth() -> None:
+    err = classify_error(1, "401 Unauthorized")
+    assert isinstance(err, AuthError)
+
+
+def test_classify_unknown_falls_back_to_base() -> None:
+    err = classify_error(2, "something weird")
+    assert isinstance(err, ClaudeError)
+    assert not isinstance(err, (RateLimit, ContextOverflow, AuthError))
