@@ -3,7 +3,15 @@ from __future__ import annotations
 
 import json
 
-from src.bridge import EventType, parse_event
+from src.bridge import (
+    AuthError,
+    ClaudeError,
+    ContextOverflow,
+    EventType,
+    RateLimit,
+    classify_error,
+    parse_event,
+)
 
 
 def _j(obj: dict) -> str:
@@ -79,14 +87,6 @@ def test_parse_empty_line_returns_none() -> None:
 # ---------------------------------------------------------------------------
 # classify_error tests
 # ---------------------------------------------------------------------------
-
-from src.bridge import (  # noqa: E402
-    AuthError,
-    ClaudeError,
-    ContextOverflow,
-    RateLimit,
-    classify_error,
-)
 
 
 def test_classify_rate_limit() -> None:

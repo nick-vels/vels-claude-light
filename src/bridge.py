@@ -13,7 +13,7 @@ import asyncio
 import glob
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -230,7 +230,7 @@ class ClaudeBridge:
         *,
         prompt: str,
         session_id: str | None,
-    ) -> AsyncIterator[Event]:
+    ) -> AsyncGenerator[Event, None]:
         """Spawn the CLI and yield parsed Events. Caller iterates events.
 
         Raises ``ClaudeError`` subclasses on non-zero exit codes.
@@ -271,7 +271,11 @@ class ClaudeBridge:
                 if ev is not None:
                     yield ev
         finally:
-            await stderr_task
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except asyncio.CancelledError:
+                pass
 
         rc = await self._process.wait()
         if rc != 0:
@@ -280,9 +284,9 @@ class ClaudeBridge:
 
     async def _read_stdout_with_timeout(self) -> AsyncIterator[str]:
         assert self._process and self._process.stdout
-        deadline = asyncio.get_event_loop().time() + self._timeout
+        deadline = asyncio.get_running_loop().time() + self._timeout
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 self.kill()
                 raise Timeout(f"Claude CLI exceeded {self._timeout}s")
