@@ -25,12 +25,12 @@ class Storage:
     async def _load(self) -> dict[str, dict]:
         if self._cache is not None:
             return self._cache
-        if not self._path.exists():
+        try:
+            async with aiofiles.open(self._path, encoding="utf-8") as f:
+                data = await f.read()
+            self._cache = json.loads(data) if data.strip() else {}
+        except FileNotFoundError:
             self._cache = {}
-            return self._cache
-        async with aiofiles.open(self._path, encoding="utf-8") as f:
-            data = await f.read()
-        self._cache = json.loads(data) if data.strip() else {}
         return self._cache
 
     async def _save(self) -> None:
@@ -69,5 +69,5 @@ class Storage:
     async def clear_session(self, chat_id: int) -> None:
         async with self._lock:
             data = await self._load()
-            data.pop(str(chat_id), None)
-            await self._save()
+            if data.pop(str(chat_id), None) is not None:
+                await self._save()

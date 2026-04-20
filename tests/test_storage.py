@@ -50,3 +50,11 @@ async def test_atomic_write_leaves_no_temp_files(tmp_sessions_file: Path) -> Non
     # Temp file from atomic rename must not linger
     temp_files = list(tmp_sessions_file.parent.glob("*.tmp"))
     assert temp_files == []
+
+
+async def test_clear_missing_is_noop(tmp_sessions_file: Path) -> None:
+    """clear_session on absent chat_id should be a no-op, no file write."""
+    storage = Storage(tmp_sessions_file)
+    await storage.clear_session(99)  # no entry for 99
+    # File should not have been created since nothing was written
+    assert not tmp_sessions_file.exists()
