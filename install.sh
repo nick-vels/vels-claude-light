@@ -39,6 +39,10 @@ CFG_IDS=""
 CFG_WORKSPACE=""
 CFG_BOT_USERNAME=""
 
+# Captured by check_claude_cli. Written to .env so the service doesn't have to
+# rediscover it via PATH (systemd's PATH is minimal).
+CLAUDE_BIN_PATH=""
+
 # ---- helpers ----
 print_banner() {
     cat <<'EOF'
@@ -186,6 +190,7 @@ check_claude_cli() {
         claude_bin=$(command -v claude 2>/dev/null || true)
     fi
     if [[ -z "$claude_bin" ]]; then
+        CLAUDE_BIN_PATH=""
         log_err "claude CLI не найден"
         cat >&2 <<'EOF'
 
@@ -206,7 +211,8 @@ EOF
         ver=$("$claude_bin" --version 2>/dev/null | head -n1 || echo "unknown")
     fi
     [[ -n "$ver" ]] || ver="unknown"
-    log_ok "claude CLI ($ver)"
+    CLAUDE_BIN_PATH="$claude_bin"
+    log_ok "claude CLI ($ver, $claude_bin)"
 }
 
 prechecks_all() {
@@ -332,7 +338,7 @@ TELEGRAM_BOT_TOKEN=$CFG_TOKEN
 ALLOWED_USER_IDS=$CFG_IDS
 WORKING_DIR=$CFG_WORKSPACE
 PERMISSION_MODE=bypassPermissions
-CLAUDE_BINARY=auto
+CLAUDE_BINARY=${CLAUDE_BIN_PATH:-auto}
 CLAUDE_TIMEOUT_MINUTES=30
 SESSIONS_FILE=data/sessions.json
 MAX_MESSAGE_LENGTH=4096
