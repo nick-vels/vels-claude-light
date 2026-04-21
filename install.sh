@@ -417,7 +417,7 @@ prompt_onboarding() {
         printf "\n1/3  Токен Telegram-бота\n"
         printf "     Получите у @BotFather командой /newbot.\n"
         printf "     Пример: 1234567890:AAF...XyZ\n\n"
-        read -rp "     Токен: " token || die "Ввод прерван (EOF)."
+        read -rp "     Токен: " token </dev/tty || die "Ввод прерван (EOF)."
         if ! validate_token "$token" >/dev/null 2>&1; then
             log_err "неверный формат токена"
             continue
@@ -438,7 +438,7 @@ prompt_onboarding() {
     while :; do
         printf "\n2/3  Ваш Telegram user ID\n"
         printf "     Узнайте у @userinfobot. Несколько — через запятую.\n\n"
-        read -rp "     ID: " ids || die "Ввод прерван (EOF)."
+        read -rp "     ID: " ids </dev/tty || die "Ввод прерван (EOF)."
         if parsed=$(parse_user_ids "$ids" 2>/dev/null); then
             CFG_IDS="$parsed"
             break
@@ -452,7 +452,7 @@ prompt_onboarding() {
     while :; do
         printf "\n3/3  Рабочая директория Claude\n"
         printf "     Если её нет — создам. Enter = дефолт.\n\n"
-        read -rp "     Путь [${default_ws}]: " ws || die "Ввод прерван (EOF)."
+        read -rp "     Путь [${default_ws}]: " ws </dev/tty || die "Ввод прерван (EOF)."
         ws="${ws:-$default_ws}"
         if expanded=$(expand_workspace_path "$ws" 2>/dev/null); then
             CFG_WORKSPACE="$expanded"
