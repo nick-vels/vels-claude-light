@@ -3,6 +3,7 @@
 set -uo pipefail
 
 # shellcheck source=../install.sh
+# shellcheck disable=SC1091
 source "$(dirname "$0")/../install.sh"  # main-guard prevents main() from running
 
 FAIL=0
@@ -43,8 +44,8 @@ assert_fail "mixed"        parse_user_ids "123,abc"
 assert_fail "empty"        parse_user_ids ""
 
 echo "== expand_workspace_path =="
-tilde_ws=~'/workspace'
-assert_eq "$(HOME=/home/vels expand_workspace_path "$tilde_ws")" "/home/vels/workspace" "tilde expansion"
+# shellcheck disable=SC2088  # literal tilde is exactly what we're asking the expander to handle
+assert_eq "$(HOME=/home/vels expand_workspace_path '~/workspace')" "/home/vels/workspace" "tilde expansion"
 assert_eq "$(expand_workspace_path '/abs/path')" "/abs/path" "absolute passthrough"
 assert_fail "relative"  expand_workspace_path "rel/path"
 

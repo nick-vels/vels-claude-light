@@ -2,7 +2,7 @@
 # install.sh — Vels Claude Light one-command installer for Ubuntu/Debian VPS.
 # Safe to re-run: all steps are idempotent.
 
-# shellcheck disable=SC2034  # forward-declared constants used by future installer steps
+# shellcheck disable=SC2034,SC2088  # forward-declared constants; literal ~ in validators is intentional
 
 set -euo pipefail
 
@@ -82,23 +82,19 @@ parse_user_ids() {
 expand_workspace_path() {
     local raw=${1:-}
     [[ -n "$raw" ]] || return 1
-    local first two slash
-    first="${raw:0:1}"
-    two="${raw:0:2}"
-    slash="/"
-    if [[ "$first" == "$slash" ]]; then
-        printf "%s" "$raw"
-    elif [[ "$first" == "~" && "$two" == "~$slash" ]]; then
-        printf "%s/%s" "$HOME" "${raw:2}"
-    elif [[ "$raw" == "~" ]]; then
+    if [[ "$raw" == "~" ]]; then
         printf "%s" "$HOME"
+    elif [[ "$raw" == "~/"* ]]; then
+        printf "%s/%s" "$HOME" "${raw#"~/"}"
+    elif [[ "$raw" == "/"* ]]; then
+        printf "%s" "$raw"
     else
         return 1
     fi
 }
 
 # default_workspace: placeholder default for onboarding. Task 4 may override.
-default_workspace() { printf '%s' ~'/workspace'; }
+default_workspace() { printf "%s" "~/workspace"; }
 
 check_os() {
     [[ "$(uname -s)" == "Linux" ]] || die "Скрипт работает только на Linux."
