@@ -124,7 +124,7 @@ claude
 Одна команда — и установщик всё сделает сам:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/nick-vels/vels-claude-light/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/nick-vels/vels-claude-light/main/install.sh | sudo bash
 ```
 
 Установщик задаст **три вопроса**:

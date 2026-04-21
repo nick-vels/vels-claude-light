@@ -221,7 +221,7 @@ resolve_service_user() {
         SERVICE_HOME="$VELS_BOT_HOME"
         SERVICE_NEEDS_CREATE=1
     else
-        die "Запустите через sudo (sudo ./install.sh)."
+        die "Нужны root-права. Запустите: curl -sSL <url>/install.sh | sudo bash (или sudo ./install.sh)."
     fi
 }
 
