@@ -174,7 +174,16 @@ apt_install_missing() {
 }
 
 check_claude_cli() {
-    if ! command -v claude >/dev/null 2>&1; then
+    # Service runs as SUDO_USER, so look up `claude` in their login PATH.
+    # When curl|sudo bash resets root's PATH, a user-level npm global install
+    # (e.g. ~/.npm-global/bin or an nvm shim) is still reachable this way.
+    local claude_bin=""
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        claude_bin=$(sudo -u "$SUDO_USER" -H -- bash -lc 'command -v claude' 2>/dev/null || true)
+    else
+        claude_bin=$(command -v claude 2>/dev/null || true)
+    fi
+    if [[ -z "$claude_bin" ]]; then
         log_err "claude CLI не найден"
         cat >&2 <<'EOF'
 
@@ -189,7 +198,12 @@ EOF
         exit 1
     fi
     local ver
-    ver=$(claude --version 2>/dev/null | head -n1 || echo "unknown")
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        ver=$(sudo -u "$SUDO_USER" -H -- bash -lc 'claude --version 2>/dev/null | head -n1' || echo "unknown")
+    else
+        ver=$("$claude_bin" --version 2>/dev/null | head -n1 || echo "unknown")
+    fi
+    [[ -n "$ver" ]] || ver="unknown"
     log_ok "claude CLI ($ver)"
 }
 
