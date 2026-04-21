@@ -272,6 +272,11 @@ run_as_service_user() {
 install_code() {
     step "📦 Устанавливаю код в $INSTALL_DIR"
     if [[ -d "$INSTALL_DIR/.git" ]]; then
+        local remote_url
+        remote_url=$($SUDO git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)
+        if [[ "$remote_url" != "$REPO_URL_DEFAULT" ]]; then
+            die "Репозиторий в $INSTALL_DIR ($remote_url) — не наш. Запустите uninstall.sh."
+        fi
         log_info "обновляю существующую копию (git pull)…"
         $SUDO git -C "$INSTALL_DIR" pull --ff-only --quiet
     elif [[ -e "$INSTALL_DIR" && -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
@@ -294,8 +299,8 @@ install_python_env() {
         log_ok "venv уже есть"
     fi
     log_info "pip install -r requirements.txt…"
-    run_as_service_user "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
-    run_as_service_user "$INSTALL_DIR/.venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+    run_as_service_user "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip
+    run_as_service_user "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
     log_ok "зависимости установлены"
 }
 
