@@ -27,6 +27,18 @@ readonly C_DIM=$'\033[2m'
 # $SUDO even if shellcheck traces the call graph out-of-order.
 SUDO=""
 
+# Service user resolution — assigned by resolve_service_user. Initialized here so
+# downstream functions can be sourced and called in isolation without set -u tripping.
+SERVICE_USER=""
+SERVICE_HOME=""
+SERVICE_NEEDS_CREATE=0
+
+# Captured by prompt_onboarding. Initialized here for the same reason.
+CFG_TOKEN=""
+CFG_IDS=""
+CFG_WORKSPACE=""
+CFG_BOT_USERNAME=""
+
 # ---- helpers ----
 print_banner() {
     cat <<'EOF'
@@ -117,7 +129,7 @@ getme_check() {
     }
     # Minimal JSON parse without jq.
     local ok username
-    ok=$(printf "%s" "$response" | grep -o '"ok":true' || true)
+    ok=$(printf "%s" "$response" | grep -oE '"ok"[[:space:]]*:[[:space:]]*true' || true)
     if [[ -z "$ok" ]]; then
         log_err "Telegram отказал: $response"
         return 1
