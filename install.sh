@@ -483,6 +483,7 @@ main() {
 }
 
 # Run only when executed, not when sourced (for tests).
-if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
-    main "$@"
-fi
+# `return` is valid only inside a sourced script or a function, so it succeeds
+# iff we're being sourced. This also works when piped (`curl … | bash`), where
+# BASH_SOURCE[0] is empty and $0 is "bash".
+(return 0 2>/dev/null) || main "$@"
