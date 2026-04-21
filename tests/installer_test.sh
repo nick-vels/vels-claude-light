@@ -48,5 +48,9 @@ echo "== expand_workspace_path =="
 assert_eq "$(HOME=/home/vels expand_workspace_path '~/workspace')" "/home/vels/workspace" "tilde expansion"
 assert_eq "$(expand_workspace_path '/abs/path')" "/abs/path" "absolute passthrough"
 assert_fail "relative"  expand_workspace_path "rel/path"
+# shellcheck disable=SC2088
+assert_eq "$(HOME=/home/vels expand_workspace_path '~/')" "/home/vels" "tilde+slash becomes bare HOME"
+assert_eq "$(expand_workspace_path '/abs/path/')" "/abs/path" "trailing slash stripped on absolute"
+assert_eq "$(expand_workspace_path '/')" "/" "root slash preserved"
 
 exit $FAIL

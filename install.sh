@@ -79,18 +79,22 @@ parse_user_ids() {
 }
 
 # expand_workspace_path "~/foo" -> "/home/<user>/foo"; "/abs" passthrough; returns 1 on relative
+# Strips trailing slash (except for root "/") so paths have a single canonical form.
 expand_workspace_path() {
     local raw=${1:-}
     [[ -n "$raw" ]] || return 1
+    local result
     if [[ "$raw" == "~" ]]; then
-        printf "%s" "$HOME"
+        result="$HOME"
     elif [[ "$raw" == "~/"* ]]; then
-        printf "%s/%s" "$HOME" "${raw#"~/"}"
+        result="$HOME/${raw#"~/"}"
     elif [[ "$raw" == "/"* ]]; then
-        printf "%s" "$raw"
+        result="$raw"
     else
         return 1
     fi
+    [[ "$result" != "/" && "$result" == */ ]] && result="${result%/}"
+    printf "%s" "$result"
 }
 
 # default_workspace: placeholder default for onboarding. Task 4 may override.
@@ -171,7 +175,7 @@ prompt_onboarding() {
         printf "\n1/3  Токен Telegram-бота\n"
         printf "     Получите у @BotFather командой /newbot.\n"
         printf "     Пример: 1234567890:AAF...XyZ\n\n"
-        read -rp "     Токен: " token
+        read -rp "     Токен: " token || die "Ввод прерван (EOF)."
         if validate_token "$token" >/dev/null 2>&1; then
             CFG_TOKEN="$token"
             break
@@ -184,7 +188,7 @@ prompt_onboarding() {
     while :; do
         printf "\n2/3  Ваш Telegram user ID\n"
         printf "     Узнайте у @userinfobot. Несколько — через запятую.\n\n"
-        read -rp "     ID: " ids
+        read -rp "     ID: " ids || die "Ввод прерван (EOF)."
         if parsed=$(parse_user_ids "$ids" 2>/dev/null); then
             CFG_IDS="$parsed"
             break
@@ -198,7 +202,7 @@ prompt_onboarding() {
     while :; do
         printf "\n3/3  Рабочая директория Claude\n"
         printf "     Если её нет — создам. Enter = дефолт.\n\n"
-        read -rp "     Путь [${default_ws}]: " ws
+        read -rp "     Путь [${default_ws}]: " ws || die "Ввод прерван (EOF)."
         ws="${ws:-$default_ws}"
         if expanded=$(expand_workspace_path "$ws" 2>/dev/null); then
             CFG_WORKSPACE="$expanded"
