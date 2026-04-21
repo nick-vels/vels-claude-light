@@ -257,6 +257,80 @@ reconcile_workspace_with_user() {
     fi
 }
 
+# Run a command as SERVICE_USER. Required because on the direct-root path $SUDO is
+# empty, so the plan's "$SUDO -u SERVICE_USER" idiom expands to "-u SERVICE_USER ..."
+# and fails. `runuser` works when we're already root; `sudo -u` works under ensure_sudo.
+run_as_service_user() {
+    if [[ $EUID -eq 0 ]]; then
+        runuser -u "$SERVICE_USER" -- "$@"
+    else
+        sudo -u "$SERVICE_USER" -- "$@"
+    fi
+}
+
+# ---- install steps ----
+install_code() {
+    step "📦 Устанавливаю код в $INSTALL_DIR"
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        log_info "обновляю существующую копию (git pull)…"
+        $SUDO git -C "$INSTALL_DIR" pull --ff-only --quiet
+    elif [[ -e "$INSTALL_DIR" && -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
+        die "$INSTALL_DIR не пустая и не является нашей копией. Уберите её вручную или запустите uninstall.sh."
+    else
+        log_info "клонирую репозиторий…"
+        $SUDO mkdir -p "$(dirname "$INSTALL_DIR")"
+        $SUDO git clone --quiet "$REPO_URL_DEFAULT" "$INSTALL_DIR"
+    fi
+    $SUDO chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
+    log_ok "код на месте"
+}
+
+install_python_env() {
+    step "🐍 Python-окружение"
+    if [[ ! -d "$INSTALL_DIR/.venv" ]]; then
+        run_as_service_user python3 -m venv "$INSTALL_DIR/.venv"
+        log_ok "venv создан"
+    else
+        log_ok "venv уже есть"
+    fi
+    log_info "pip install -r requirements.txt…"
+    run_as_service_user "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip
+    run_as_service_user "$INSTALL_DIR/.venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+    log_ok "зависимости установлены"
+}
+
+write_env() {
+    step "📝 .env"
+    local env_file="$INSTALL_DIR/.env"
+    # Pre-create with restrictive perms so the secret is never world-readable, even briefly.
+    $SUDO touch "$env_file"
+    $SUDO chmod 600 "$env_file"
+    $SUDO chown "$SERVICE_USER":"$SERVICE_USER" "$env_file"
+    $SUDO tee "$env_file" >/dev/null <<EOF
+TELEGRAM_BOT_TOKEN=$CFG_TOKEN
+ALLOWED_USER_IDS=$CFG_IDS
+WORKING_DIR=$CFG_WORKSPACE
+PERMISSION_MODE=bypassPermissions
+CLAUDE_BINARY=auto
+CLAUDE_TIMEOUT_MINUTES=30
+SESSIONS_FILE=data/sessions.json
+MAX_MESSAGE_LENGTH=4096
+CODE_AS_FILE_THRESHOLD=500
+EOF
+    log_ok ".env записан (chmod 600, owner=$SERVICE_USER)"
+}
+
+ensure_workspace() {
+    step "📂 Рабочая директория"
+    if [[ ! -d "$CFG_WORKSPACE" ]]; then
+        $SUDO mkdir -p "$CFG_WORKSPACE"
+        log_ok "создана: $CFG_WORKSPACE"
+    else
+        log_ok "уже есть: $CFG_WORKSPACE"
+    fi
+    $SUDO chown "$SERVICE_USER":"$SERVICE_USER" "$CFG_WORKSPACE"
+}
+
 # ---- onboarding ----
 # Prompts user for token / ids / workspace. Sets globals:
 #   CFG_TOKEN, CFG_IDS, CFG_WORKSPACE
@@ -322,7 +396,11 @@ main() {
     resolve_service_user
     reconcile_workspace_with_user
     create_service_user_if_needed
-    echo "TODO: установка кода"
+    install_code
+    install_python_env
+    write_env
+    ensure_workspace
+    echo "TODO: systemd"
     echo "service_user=$SERVICE_USER ws=$CFG_WORKSPACE bot=@${CFG_BOT_USERNAME:-unknown}"
 }
 
