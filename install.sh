@@ -65,8 +65,9 @@ ensure_sudo() {
         command -v sudo >/dev/null 2>&1 \
             || die "Скрипт требует sudo. Установите: apt-get install sudo, или запустите от root."
         SUDO="sudo"
-        # Prompt for password once so later steps don't prompt mid-run.
-        $SUDO -v
+        # Prompt once so later sudo calls don't re-prompt. sudo opens /dev/tty
+        # itself; we only need to react if it fails (no TTY, wrong password).
+        $SUDO -v || die "sudo не смог подтвердить права. Нужна интерактивная сессия."
     fi
 }
 
@@ -80,14 +81,14 @@ apt_install_missing() {
     if ((${#missing[@]} > 0)); then
         log_info "ставлю через apt: ${missing[*]}"
         $SUDO apt-get update -qq
-        $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
     fi
 }
 
 check_claude_cli() {
     if ! command -v claude >/dev/null 2>&1; then
         log_err "claude CLI не найден"
-        cat <<'EOF'
+        cat >&2 <<'EOF'
 
    Vels Claude Light — это мост к Claude Code CLI, его нужно
    установить отдельно:
