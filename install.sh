@@ -109,8 +109,10 @@ expand_workspace_path() {
     printf "%s" "$result"
 }
 
-# default_workspace: placeholder default for onboarding. Task 4 may override.
-default_workspace() { printf "%s" "~/workspace"; }
+# default_workspace: absolute default for onboarding. Under `sudo bash` $HOME
+# is /root, so fall back on SERVICE_HOME (set by resolve_service_user) when
+# available — that's the home of the user that will actually run the service.
+default_workspace() { printf "%s/workspace" "${SERVICE_HOME:-$HOME}"; }
 
 # ---- telegram helpers ----
 # getme_check <token>: on success prints bot username to stdout and returns 0;
@@ -461,14 +463,17 @@ prompt_onboarding() {
     done
 
     # --- 3. workspace ---
-    local default_ws ws expanded
+    # Expand `~` relative to SERVICE_HOME (set by resolve_service_user), not to
+    # root's /root, so `curl … | sudo bash` ends up with /home/<user>/workspace.
+    local default_ws ws expanded target_home
+    target_home="${SERVICE_HOME:-$HOME}"
     default_ws=$(default_workspace)
     while :; do
         printf "\n3/3  Рабочая директория Claude\n"
         printf "     Если её нет — создам. Enter = дефолт.\n\n"
         read -rp "     Путь [${default_ws}]: " ws </dev/tty || die "Ввод прерван (EOF)."
         ws="${ws:-$default_ws}"
-        if expanded=$(expand_workspace_path "$ws" 2>/dev/null); then
+        if expanded=$(HOME="$target_home" expand_workspace_path "$ws" 2>/dev/null); then
             CFG_WORKSPACE="$expanded"
             break
         fi
@@ -480,8 +485,10 @@ prompt_onboarding() {
 main() {
     print_banner
     prechecks_all
-    prompt_onboarding
+    # Resolve SERVICE_USER/SERVICE_HOME *before* prompting so the workspace
+    # default and tilde expansion point at the right user's home, not root's.
     resolve_service_user
+    prompt_onboarding
     reconcile_workspace_with_user
     create_service_user_if_needed
     install_code
