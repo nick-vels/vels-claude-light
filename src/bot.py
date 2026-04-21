@@ -6,14 +6,22 @@ import logging
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from aiogram import BaseMiddleware, Bot, Dispatcher
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BotCommand, Message, TelegramObject
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    Message,
+    TelegramObject,
+)
 
 from src.bridge import (
     ClaudeBridge,
@@ -24,6 +32,7 @@ from src.bridge import (
 )
 from src.storage import Storage
 from src.streaming import Streamer
+from src.uploads import save_to_uploads
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +113,19 @@ class VelsClaudeLightBot:
     # --- lifecycle --------------------------------------------------------
 
     async def run(self) -> None:
+        # Clear command overrides on narrower scopes. Telegram resolves the
+        # client's command menu from the most specific matching scope, so a
+        # forgotten BotFather entry under e.g. "all private chats" would mask
+        # the default scope set below.
+        for scope in (
+            BotCommandScopeAllPrivateChats(),
+            BotCommandScopeAllGroupChats(),
+            BotCommandScopeAllChatAdministrators(),
+        ):
+            try:
+                await self._bot.delete_my_commands(scope=scope)
+            except Exception as e:
+                logger.debug("delete_my_commands(%s) failed: %s", type(scope).__name__, e)
         await self._bot.set_my_commands(BOT_COMMANDS)
         await self._bot.delete_webhook(drop_pending_updates=True)
         me = await self._bot.get_me()
@@ -121,6 +143,9 @@ class VelsClaudeLightBot:
         self._dp.message.register(self._cmd_compact, Command("compact"))
         self._dp.message.register(self._cmd_stop, Command("stop"))
         self._dp.message.register(self._cmd_status, Command("status"))
+        # Media before text — order matters, aiogram picks the first match.
+        self._dp.message.register(self._on_photo, F.photo)
+        self._dp.message.register(self._on_document, F.document)
         self._dp.message.register(self._on_text)
 
     # --- handlers ---------------------------------------------------------
@@ -142,16 +167,69 @@ class VelsClaudeLightBot:
         """Default handler: push user text into FIFO queue for this chat."""
         if not msg.text:
             return
+        await self._dispatch_prompt(msg, msg.text)
+
+    async def _on_photo(self, msg: Message) -> None:
+        """Save Telegram photo to working_dir and feed its path into Claude."""
+        if not msg.photo:
+            return
+        # Largest rendition last; file_id is stable.
+        photo = msg.photo[-1]
+        try:
+            path = await save_to_uploads(
+                self._bot,
+                file_id=photo.file_id,
+                file_name=f"photo_{photo.file_unique_id}.jpg",
+                working_dir=self._cfg.working_dir,
+            )
+        except Exception as e:
+            logger.warning("photo download failed: %s", e)
+            await msg.answer(f"❌ Не удалось скачать изображение: {e}")
+            return
+        await self._dispatch_prompt(msg, self._build_upload_prompt(path, msg.caption))
+
+    async def _on_document(self, msg: Message) -> None:
+        """Save any document attachment and feed its path into Claude."""
+        if not msg.document:
+            return
+        doc = msg.document
+        try:
+            path = await save_to_uploads(
+                self._bot,
+                file_id=doc.file_id,
+                file_name=doc.file_name or f"file_{doc.file_unique_id}",
+                working_dir=self._cfg.working_dir,
+            )
+        except Exception as e:
+            logger.warning("document download failed: %s", e)
+            await msg.answer(f"❌ Не удалось скачать файл: {e}")
+            return
+        await self._dispatch_prompt(msg, self._build_upload_prompt(path, msg.caption))
+
+    # --- helpers ----------------------------------------------------------
+
+    async def _dispatch_prompt(self, msg: Message, prompt: str) -> None:
+        """Run prompt immediately or enqueue behind an active task."""
         chat = self._chats[msg.chat.id]
-        # If nothing is running, run immediately; otherwise queue
         if chat.active_task is None or chat.active_task.done():
             chat.active_task = asyncio.create_task(
-                self._run_one(msg.chat.id, msg.text, msg)
+                self._run_one(msg.chat.id, prompt, msg)
             )
-        else:
-            chat.queue.append((msg.text, msg))
-            pending = len(chat.queue)
-            await msg.answer(f"⏳ В очереди ({pending} впереди)")
+            return
+        chat.queue.append((prompt, msg))
+        await msg.answer(f"⏳ В очереди ({len(chat.queue)} впереди)")
+
+    def _build_upload_prompt(self, path: Path, caption: str | None) -> str:
+        """Prompt that references the uploaded file's path relative to cwd."""
+        try:
+            rel = path.relative_to(Path(self._cfg.working_dir))
+        except ValueError:
+            rel = path
+        header = f"Пользователь прикрепил файл: {rel}"
+        caption = (caption or "").strip()
+        if caption:
+            return f"{header}\n\n{caption}"
+        return f"{header}\n\nПрочитай его (инструмент Read поддерживает изображения, PDF, текст) и ответь пользователю."
 
     async def _run_one(self, chat_id: int, text: str, reply_to: Message) -> None:
         chat = self._chats[chat_id]
@@ -186,6 +264,7 @@ class VelsClaudeLightBot:
         state = await self._streamer.start(chat_id)
         chat.active_streaming = state
 
+        got_text = False
         try:
             async for event in bridge.run(prompt=prompt, session_id=session_id):
                 if event.type == EventType.INIT:
@@ -193,12 +272,18 @@ class VelsClaudeLightBot:
                     if sid:
                         await self._storage.set_session(chat_id, sid)
                 elif event.type == EventType.TEXT:
+                    got_text = True
                     self._streamer.append(state, event.text)
                 elif event.type == EventType.RESULT:
                     meta = event.metadata or {}
                     sid = meta.get("session_id")
                     if sid:
                         await self._storage.set_session(chat_id, sid)
+                    # Some prompts (e.g. `/compact`) return only a terminal
+                    # `result` without streaming text_delta chunks. Fold the
+                    # result text in so the user sees *something*.
+                    if not got_text and event.text:
+                        self._streamer.append(state, event.text)
             await self._streamer.finalize(state)
             await self._storage.bump_message_count(chat_id)
         except ContextOverflow as e:
