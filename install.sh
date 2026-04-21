@@ -336,6 +336,75 @@ ensure_workspace() {
     $SUDO chown "$SERVICE_USER":"$SERVICE_USER" "$CFG_WORKSPACE"
 }
 
+install_systemd_unit() {
+    step "⚙️  systemd unit"
+    local template="$INSTALL_DIR/scripts/vels-claude-light.service"
+    [[ -f "$template" ]] || die "шаблон $template не найден — проверьте репозиторий"
+    $SUDO sed "s|__SERVICE_USER__|$SERVICE_USER|g" "$template" \
+        | $SUDO tee "$UNIT_PATH" >/dev/null
+    log_ok "$UNIT_PATH записан (User=$SERVICE_USER)"
+    $SUDO systemctl daemon-reload
+}
+
+# Returns 0 if service became active within the 3-second window, else non-zero.
+start_service() {
+    step "🚀 Запускаю сервис"
+    $SUDO systemctl enable --quiet "$SERVICE_NAME"
+    $SUDO systemctl restart "$SERVICE_NAME"
+    log_info "ожидаю 3 секунды, чтобы сервис успел стартовать…"
+    sleep 3
+    if $SUDO systemctl is-active --quiet "$SERVICE_NAME"; then
+        log_ok "сервис в статусе active"
+        return 0
+    fi
+    return 1
+}
+
+print_success() {
+    cat <<EOF
+
+──────────────────────────────────────
+${C_OK}✅  Установка завершена${C_RESET}
+
+   Сервис:        $SERVICE_NAME  (active, running)
+   Пользователь:  $SERVICE_USER
+   Папка:         $INSTALL_DIR
+   Claude cwd:    $CFG_WORKSPACE
+   Бот:           @${CFG_BOT_USERNAME:-unknown}
+
+📋  Последние логи:
+EOF
+    $SUDO journalctl -u "$SERVICE_NAME" -n 10 --no-pager | sed 's/^/     /'
+    cat <<EOF
+
+🛠   Полезные команды:
+     sudo systemctl status $SERVICE_NAME   — статус
+     sudo journalctl -u $SERVICE_NAME -f   — живые логи
+     sudo systemctl restart $SERVICE_NAME  — перезапуск
+     sudo systemctl stop $SERVICE_NAME     — остановить
+     $INSTALL_DIR/uninstall.sh         — удалить целиком
+
+Откройте Telegram и напишите боту — он должен ответить.
+EOF
+}
+
+print_failure() {
+    cat <<EOF
+
+──────────────────────────────────────
+${C_ERR}❌  Сервис не поднялся${C_RESET}
+
+Последние 30 строк логов:
+EOF
+    $SUDO journalctl -u "$SERVICE_NAME" -n 30 --no-pager | sed 's/^/     /'
+    cat <<EOF
+
+Полные логи:   sudo journalctl -u $SERVICE_NAME -n 100
+Перезапуск:    sudo systemctl restart $SERVICE_NAME
+EOF
+    exit 1
+}
+
 # ---- onboarding ----
 # Prompts user for token / ids / workspace. Sets globals:
 #   CFG_TOKEN, CFG_IDS, CFG_WORKSPACE
@@ -405,8 +474,12 @@ main() {
     install_python_env
     write_env
     ensure_workspace
-    echo "TODO: systemd"
-    echo "service_user=$SERVICE_USER ws=$CFG_WORKSPACE bot=@${CFG_BOT_USERNAME:-unknown}"
+    install_systemd_unit
+    if start_service; then
+        print_success
+    else
+        print_failure
+    fi
 }
 
 # Run only when executed, not when sourced (for tests).
