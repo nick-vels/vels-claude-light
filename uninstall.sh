@@ -43,7 +43,7 @@ fi
 # --- Workspace (опционально) ---
 if [[ -n "$workspace" && -d "$workspace" ]]; then
     printf "\nРабочая папка %s — удалить? [y/N]: " "$workspace"
-    read -r ans
+    read -r ans || ans=""
     if [[ "$ans" =~ ^[Yy]$ ]]; then
         rm -rf "$workspace"
         log_ok "rm -rf $workspace"
@@ -57,7 +57,7 @@ if id -u "$VELS_BOT_USER" >/dev/null 2>&1; then
     gecos=$(getent passwd "$VELS_BOT_USER" | cut -d: -f5)
     if [[ "$gecos" == "$VELS_BOT_GECOS" ]]; then
         printf "\nПользователь %s был создан установщиком — удалить? [Y/n]: " "$VELS_BOT_USER"
-        read -r ans
+        read -r ans || ans=""
         if [[ -z "$ans" || "$ans" =~ ^[Yy]$ ]]; then
             userdel -r "$VELS_BOT_USER" 2>/dev/null || userdel "$VELS_BOT_USER"
             log_ok "userdel $VELS_BOT_USER"
