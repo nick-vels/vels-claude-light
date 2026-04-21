@@ -46,6 +46,6 @@ main() {
 }
 
 # Run only when executed, not when sourced (for tests).
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
     main "$@"
 fi
