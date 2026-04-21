@@ -254,6 +254,11 @@ class ClaudeBridge:
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # stream-json lines can be large (image tool results, long code
+            # blocks). Default 64 KB readline buffer overflows with a
+            # `LimitOverrunError: Separator is not found, and chunk exceed
+            # the limit`. 16 MB is well above anything Claude emits per line.
+            limit=16 * 1024 * 1024,
         )
 
         stderr_buf: list[bytes] = []
