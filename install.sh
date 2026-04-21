@@ -51,6 +51,55 @@ log_info() { printf '   %s\n' "$*"; }
 step()     { printf '\n%s%s%s\n' "$C_BOLD" "$*" "$C_RESET"; }
 die()      { log_err "$*"; exit 1; }
 
+# ---- validators ----
+# validate_token <token> -> prints "ok" on match, returns 1 otherwise
+validate_token() {
+    local t=${1:-}
+    [[ -n "$t" ]] || return 1
+    [[ "$t" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || return 1
+    printf "ok"
+}
+
+# parse_user_ids "1,2,3" -> prints normalized "1,2,3", returns 1 on invalid
+# Strips whitespace around and inside each comma-separated id.
+parse_user_ids() {
+    local raw=${1:-}
+    [[ -n "$raw" ]] || return 1
+    local IFS=,
+    local parts=()
+    read -ra parts <<<"$raw"
+    local out=()
+    local p
+    for p in "${parts[@]}"; do
+        p="${p//[[:space:]]/}"
+        [[ "$p" =~ ^[0-9]+$ ]] || return 1
+        out+=("$p")
+    done
+    (IFS=,; printf "%s" "${out[*]}")
+}
+
+# expand_workspace_path "~/foo" -> "/home/<user>/foo"; "/abs" passthrough; returns 1 on relative
+expand_workspace_path() {
+    local raw=${1:-}
+    [[ -n "$raw" ]] || return 1
+    local first two slash
+    first="${raw:0:1}"
+    two="${raw:0:2}"
+    slash="/"
+    if [[ "$first" == "$slash" ]]; then
+        printf "%s" "$raw"
+    elif [[ "$first" == "~" && "$two" == "~$slash" ]]; then
+        printf "%s/%s" "$HOME" "${raw:2}"
+    elif [[ "$raw" == "~" ]]; then
+        printf "%s" "$HOME"
+    else
+        return 1
+    fi
+}
+
+# default_workspace: placeholder default for onboarding. Task 4 may override.
+default_workspace() { printf '%s' ~'/workspace'; }
+
 check_os() {
     [[ "$(uname -s)" == "Linux" ]] || die "Скрипт работает только на Linux."
     command -v apt-get >/dev/null 2>&1 \
@@ -114,11 +163,62 @@ prechecks_all() {
     check_claude_cli
 }
 
+# ---- onboarding ----
+# Prompts user for token / ids / workspace. Sets globals:
+#   CFG_TOKEN, CFG_IDS, CFG_WORKSPACE
+prompt_onboarding() {
+    step "⚙️  Настройка бота"
+
+    # --- 1. token ---
+    local token
+    while :; do
+        printf "\n1/3  Токен Telegram-бота\n"
+        printf "     Получите у @BotFather командой /newbot.\n"
+        printf "     Пример: 1234567890:AAF...XyZ\n\n"
+        read -rp "     Токен: " token
+        if validate_token "$token" >/dev/null 2>&1; then
+            CFG_TOKEN="$token"
+            break
+        fi
+        log_err "неверный формат токена"
+    done
+
+    # --- 2. ids ---
+    local ids parsed
+    while :; do
+        printf "\n2/3  Ваш Telegram user ID\n"
+        printf "     Узнайте у @userinfobot. Несколько — через запятую.\n\n"
+        read -rp "     ID: " ids
+        if parsed=$(parse_user_ids "$ids" 2>/dev/null); then
+            CFG_IDS="$parsed"
+            break
+        fi
+        log_err "ID должен быть числом (или несколько через запятую)"
+    done
+
+    # --- 3. workspace ---
+    local default_ws ws expanded
+    default_ws=$(default_workspace)
+    while :; do
+        printf "\n3/3  Рабочая директория Claude\n"
+        printf "     Если её нет — создам. Enter = дефолт.\n\n"
+        read -rp "     Путь [${default_ws}]: " ws
+        ws="${ws:-$default_ws}"
+        if expanded=$(expand_workspace_path "$ws" 2>/dev/null); then
+            CFG_WORKSPACE="$expanded"
+            break
+        fi
+        log_err "путь должен быть абсолютным (начинаться с / или ~/)"
+    done
+}
+
 # ---- main ----
 main() {
     print_banner
     prechecks_all
-    echo "TODO: онбординг"
+    prompt_onboarding
+    echo "TODO: установка"
+    echo "token=${CFG_TOKEN:0:10}..., ids=$CFG_IDS, ws=$CFG_WORKSPACE"
 }
 
 # Run only when executed, not when sourced (for tests).
