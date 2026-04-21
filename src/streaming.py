@@ -7,10 +7,18 @@
 - `finalize()` stops the loops, sends the final formatted message, deletes the timer.
 - On `sendMessageDraft` failure the draft loop transparently falls back to
   ``send_message`` + ``edit_message_text``.
+
+During streaming we push **HTML-escaped plain text**, not markdown→HTML output.
+Re-formatting on every tick would reshape the text whenever a markdown pair
+closes (e.g. ``**word**`` → ``<b>word</b>``), turning what should be a pure
+append into a mid-string rewrite. The draft animation renders such rewrites
+as delete-and-retype, which looks like the message is flickering. Full
+markdown formatting is applied only in ``finalize()`` for the final message.
 """
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import random
 import re
@@ -72,6 +80,15 @@ class Streamer:
             max_length=self._max_length,
             timer_message=timer,
         )
+        # sendMessageDraft works only in private chats (positive chat_id).
+        # In groups/channels go straight to fallback — no point spamming the
+        # draft endpoint with requests that will always fail.
+        if chat_id < 0:
+            state._fallback_mode = True
+            logger.info(
+                "draft streaming disabled: chat_id=%s is not a private chat",
+                chat_id,
+            )
         state._draft_task = asyncio.create_task(self._draft_loop(state))
         state._timer_task = asyncio.create_task(self._timer_loop(state))
         return state
@@ -103,15 +120,12 @@ class Streamer:
 
         # Nothing to send?
         if not state.buffer.strip():
-            if aborted:
-                try:
-                    return await self._bot.send_message(
-                        state.chat_id, "🛑 Остановлено (без текста)"
-                    )
-                except Exception as e:
-                    logger.warning("send aborted message failed: %s", e)
-                    return None
-            return None
+            notice = "🛑 Остановлено (без текста)" if aborted else "✅ Готово (без текста)"
+            try:
+                return await self._bot.send_message(state.chat_id, notice)
+            except Exception as e:
+                logger.warning("send empty-result notice failed: %s", e)
+                return None
 
         return await self._send_final(state, aborted=aborted)
 
@@ -126,31 +140,38 @@ class Streamer:
                     display = state.buffer
                     if len(display) > state.max_length - 50:
                         display = display[-(state.max_length - 50):]
-                    try:
-                        html_text = format_for_telegram(display) or display
-                    except Exception as e:
-                        logger.debug("format_for_telegram error: %s", e)
-                        html_text = display
+                    # HTML-escaped plain text only — markdown rendering happens
+                    # in finalize(). See module docstring.
+                    draft_text = html.escape(display)
                     if not state._fallback_mode:
                         try:
                             await self._bot.send_message_draft(
                                 chat_id=state.chat_id,
                                 draft_id=state._draft_id,
-                                text=html_text,
+                                text=draft_text,
                                 parse_mode="HTML",
                             )
                         except Exception as e:
-                            logger.warning("draft_api_unavailable: %s", e)
+                            logger.warning(
+                                "sendMessageDraft failed, falling back to "
+                                "send_message+edit_text: %s: %s (text_len=%d, "
+                                "draft_id=%s, chat_id=%s)",
+                                type(e).__name__,
+                                e,
+                                len(draft_text),
+                                state._draft_id,
+                                state.chat_id,
+                            )
                             state._fallback_mode = True
                     if state._fallback_mode:
                         try:
                             if state.final_message is None:
                                 state.final_message = await self._bot.send_message(
-                                    state.chat_id, html_text, parse_mode="HTML"
+                                    state.chat_id, draft_text, parse_mode="HTML"
                                 )
                             else:
                                 await state.final_message.edit_text(
-                                    html_text, parse_mode="HTML"
+                                    draft_text, parse_mode="HTML"
                                 )
                         except Exception as e:
                             if "message is not modified" not in str(e):
