@@ -10,7 +10,7 @@ set -euo pipefail
 readonly INSTALL_DIR="/opt/vels-claude-light"
 readonly UNIT_PATH="/etc/systemd/system/vels-claude-light.service"
 readonly SERVICE_NAME="vels-claude-light"
-readonly REPO_URL_DEFAULT="https://github.com/<owner>/vels-claude-light.git"
+readonly REPO_URL_DEFAULT="https://github.com/nick-vels/vels-claude-light.git"
 readonly VELS_BOT_USER="vels-bot"
 readonly VELS_BOT_HOME="/var/lib/${VELS_BOT_USER}"
 readonly VELS_BOT_GECOS="vels-claude-light service account"
