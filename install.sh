@@ -100,6 +100,33 @@ expand_workspace_path() {
 # default_workspace: placeholder default for onboarding. Task 4 may override.
 default_workspace() { printf "%s" "~/workspace"; }
 
+# ---- telegram helpers ----
+# getme_check <token>: on success prints bot username to stdout and returns 0;
+# on failure logs an error to stderr and returns non-zero.
+# Test hook: if VELS_GETME_MOCK is set, its value is printed verbatim (no HTTP).
+getme_check() {
+    local token=$1
+    if [[ -n "${VELS_GETME_MOCK:-}" ]]; then
+        printf "%s" "$VELS_GETME_MOCK"
+        return 0
+    fi
+    local response
+    response=$(curl -fsS --max-time 10 "https://api.telegram.org/bot${token}/getMe") || {
+        log_err "не удалось достучаться до api.telegram.org (сеть? файрвол?)"
+        return 1
+    }
+    # Minimal JSON parse without jq.
+    local ok username
+    ok=$(printf "%s" "$response" | grep -o '"ok":true' || true)
+    if [[ -z "$ok" ]]; then
+        log_err "Telegram отказал: $response"
+        return 1
+    fi
+    username=$(printf "%s" "$response" | sed -n 's/.*"username":"\([^"]*\)".*/\1/p')
+    [[ -n "$username" ]] || username="unknown"
+    printf "%s" "$username"
+}
+
 check_os() {
     [[ "$(uname -s)" == "Linux" ]] || die "Скрипт работает только на Linux."
     command -v apt-get >/dev/null 2>&1 \
@@ -163,6 +190,61 @@ prechecks_all() {
     check_claude_cli
 }
 
+# ---- service user ----
+# resolve_service_user: decides which Linux user runs the service.
+#   - sudo launched by regular user: SERVICE_USER = $SUDO_USER (no account creation).
+#   - direct root (no SUDO_USER): SERVICE_USER = vels-bot (we'll create it).
+#   - plain non-root: die (user must re-run under sudo).
+# Sets globals: SERVICE_USER, SERVICE_HOME, SERVICE_NEEDS_CREATE.
+# Test hook: VELS_EUID_OVERRIDE, if set, is used in place of $EUID.
+resolve_service_user() {
+    local euid="${VELS_EUID_OVERRIDE:-$EUID}"
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        SERVICE_USER="$SUDO_USER"
+        SERVICE_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+        [[ -n "$SERVICE_HOME" ]] || SERVICE_HOME="/home/$SUDO_USER"
+        SERVICE_NEEDS_CREATE=0
+    elif (( euid == 0 )); then
+        SERVICE_USER="$VELS_BOT_USER"
+        SERVICE_HOME="$VELS_BOT_HOME"
+        SERVICE_NEEDS_CREATE=1
+    else
+        die "Запустите через sudo (sudo ./install.sh)."
+    fi
+}
+
+# create_service_user_if_needed: creates the vels-bot system user on the direct-root path.
+# Idempotent: returns silently if the user already exists.
+create_service_user_if_needed() {
+    (( SERVICE_NEEDS_CREATE == 1 )) || return 0
+    if id -u "$SERVICE_USER" >/dev/null 2>&1; then
+        log_ok "пользователь $SERVICE_USER уже существует"
+        return 0
+    fi
+    log_info "создаю системного пользователя $SERVICE_USER"
+    $SUDO useradd --system --create-home \
+        --home-dir "$SERVICE_HOME" \
+        --shell /usr/sbin/nologin \
+        --comment "$VELS_BOT_GECOS" \
+        "$SERVICE_USER"
+    log_ok "пользователь $SERVICE_USER создан"
+}
+
+# If the service user is our managed vels-bot account, the default $HOME/workspace
+# path (captured before we knew SERVICE_USER) won't be writable by vels-bot.
+# Swap it for $SERVICE_HOME/workspace and warn if the user explicitly chose a
+# path outside vels-bot's home tree.
+reconcile_workspace_with_user() {
+    (( SERVICE_NEEDS_CREATE == 1 )) || return 0
+    if [[ "$CFG_WORKSPACE" == "$HOME/workspace" || "$CFG_WORKSPACE" == "$HOME/"* ]]; then
+        local new="$SERVICE_HOME/workspace"
+        log_warn "меняю workspace с $CFG_WORKSPACE на $new (владелец будет $SERVICE_USER)"
+        CFG_WORKSPACE="$new"
+    elif [[ "$CFG_WORKSPACE" != "$SERVICE_HOME"* ]]; then
+        log_warn "workspace $CFG_WORKSPACE будет принадлежать $SERVICE_USER — другие пользователи туда не попадут"
+    fi
+}
+
 # ---- onboarding ----
 # Prompts user for token / ids / workspace. Sets globals:
 #   CFG_TOKEN, CFG_IDS, CFG_WORKSPACE
@@ -176,11 +258,19 @@ prompt_onboarding() {
         printf "     Получите у @BotFather командой /newbot.\n"
         printf "     Пример: 1234567890:AAF...XyZ\n\n"
         read -rp "     Токен: " token || die "Ввод прерван (EOF)."
-        if validate_token "$token" >/dev/null 2>&1; then
-            CFG_TOKEN="$token"
-            break
+        if ! validate_token "$token" >/dev/null 2>&1; then
+            log_err "неверный формат токена"
+            continue
         fi
-        log_err "неверный формат токена"
+        log_info "проверяю токен через getMe…"
+        local username
+        if ! username=$(getme_check "$token"); then
+            continue  # getme_check already logged via log_err to stderr
+        fi
+        CFG_TOKEN="$token"
+        CFG_BOT_USERNAME="$username"
+        log_ok "бот: @${username}"
+        break
     done
 
     # --- 2. ids ---
@@ -217,8 +307,11 @@ main() {
     print_banner
     prechecks_all
     prompt_onboarding
-    echo "TODO: установка"
-    echo "token=${CFG_TOKEN:0:10}..., ids=$CFG_IDS, ws=$CFG_WORKSPACE"
+    resolve_service_user
+    reconcile_workspace_with_user
+    create_service_user_if_needed
+    echo "TODO: установка кода"
+    echo "service_user=$SERVICE_USER ws=$CFG_WORKSPACE bot=@${CFG_BOT_USERNAME:-unknown}"
 }
 
 # Run only when executed, not when sourced (for tests).

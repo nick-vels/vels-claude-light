@@ -53,4 +53,28 @@ assert_eq "$(HOME=/home/vels expand_workspace_path '~/')" "/home/vels" "tilde+sl
 assert_eq "$(expand_workspace_path '/abs/path/')" "/abs/path" "trailing slash stripped on absolute"
 assert_eq "$(expand_workspace_path '/')" "/" "root slash preserved"
 
+echo "== getme_check (mocked) =="
+assert_eq "$(VELS_GETME_MOCK='my_bot' getme_check 'tok')" "my_bot" "mock returns username"
+
+echo "== resolve_service_user =="
+# Helper: resets the service-user globals between cases.
+_reset_svc() { unset SERVICE_USER SERVICE_HOME SERVICE_NEEDS_CREATE; }
+
+# Case 1: sudo path.
+_reset_svc
+SUDO_USER=vels VELS_EUID_OVERRIDE=1000 resolve_service_user 2>/dev/null
+assert_eq "${SERVICE_USER:-}" "vels" "sudo path sets SERVICE_USER to SUDO_USER"
+assert_eq "${SERVICE_NEEDS_CREATE:-}" "0" "sudo path does NOT need user creation"
+
+# Case 2: direct root path.
+_reset_svc
+unset SUDO_USER
+VELS_EUID_OVERRIDE=0 resolve_service_user 2>/dev/null
+assert_eq "${SERVICE_USER:-}" "vels-bot" "direct root path uses vels-bot"
+assert_eq "${SERVICE_NEEDS_CREATE:-}" "1" "direct root path needs user creation"
+
+# Case 3: plain non-root without sudo → must die. assert_fail handles the exit.
+_reset_svc
+assert_fail "plain non-root dies" env -i VELS_EUID_OVERRIDE=1000 HOME="$HOME" bash -c "source \"$(pwd)/install.sh\"; resolve_service_user"
+
 exit $FAIL
